@@ -24,6 +24,9 @@ def _database_url() -> str:
 
 
 def run_migrations_offline() -> None:
+    # 做什么：在不建立数据库连接时生成并执行迁移上下文。
+    # 为什么：Alembic 的离线模式需要根据连接 URL 渲染 SQL，而不依赖实时数据库服务。
+    # 结果：需要导出 SQL 或在无数据库连接环境运行时，迁移仍能使用同一版本链。
     context.configure(url=_database_url(), target_metadata=target_metadata, literal_binds=True)
 
     with context.begin_transaction():
@@ -31,6 +34,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    # 做什么：建立数据库连接，并在事务中应用待执行的迁移版本。
+    # 为什么：容器启动和测试迁移需要将 DDL 实际写入目标数据库。
+    # 结果：alembic upgrade head 会安全记录已应用版本，后续重复执行不会重复建表。
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = _database_url()
     connectable = engine_from_config(configuration, prefix="sqlalchemy.", poolclass=pool.NullPool)
