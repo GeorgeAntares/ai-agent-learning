@@ -24,6 +24,8 @@ def test_upgrade_head_creates_schema_version_table(tmp_path: Path) -> None:
     table_names = inspect(engine).get_table_names()
     assert "schema_version" in table_names
     assert "orders" in table_names
+    assert "tickets" in table_names
+    assert "ticket_messages" in table_names
 
 
 def test_upgrade_head_can_run_twice_without_error(tmp_path: Path) -> None:
@@ -40,3 +42,5 @@ def test_upgrade_head_can_run_twice_without_error(tmp_path: Path) -> None:
     table_names = inspect(engine).get_table_names()
     assert "schema_version" in table_names
     assert "orders" in table_names
+    assert "tickets" in table_names
+    assert "ticket_messages" in table_names

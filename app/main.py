@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.errors import AppError, app_error_handler, error_response
 from app.logging_config import configure_logging
 from app.orders import router as orders_router
+from app.tickets import router as tickets_router
 
 # 做什么：在应用启动时读取配置并初始化日志器。
 # 为什么：路由和中间件都需要相同的配置与日志规则，不能分散初始化。
@@ -43,6 +44,11 @@ app.add_exception_handler(AppError, app_error_handler)
 # 为什么：订单接口需要复用全局请求 ID、日志和统一 AppError 响应处理。
 # 结果：GET /api/v1/orders/{order_no} 可由同一应用实例处理并遵循既有 API 契约。
 app.include_router(orders_router)
+
+# 做什么：注册工单创建与查询路由到全局 FastAPI 应用。
+# 为什么：工单接口需要复用全局请求 ID、日志和统一 AppError 响应处理。
+# 结果：POST /api/v1/tickets 与 GET /api/v1/tickets/{id} 使用项目一致的 API 契约。
+app.include_router(tickets_router)
 
 
 @app.middleware("http")

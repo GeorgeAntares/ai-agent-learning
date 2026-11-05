@@ -1,4 +1,4 @@
-from sqlalchemy import Column, MetaData, Numeric, String, Table
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, MetaData, Numeric, String, Table
 
 # 做什么：集中声明当前 API 查询需要的数据库表结构。
 # 为什么：迁移以外的查询代码需要类型化、可复用的列定义，而不能拼接 SQL 字符串。
@@ -15,4 +15,24 @@ orders = Table(
     Column("logistics_status", String(64), nullable=False),
     Column("receiver_phone", String(32), nullable=False),
     Column("receiver_address", String(500), nullable=False),
+)
+
+# 做什么：声明工单及其消息的一对多表结构。
+# 为什么：工单状态和消息内容的生命周期不同，拆表后才能支持一张工单保存多条消息。
+# 结果：N05 路由可通过外键安全查询工单详情，后续节点也可在不改动 tickets 表的情况下追加消息。
+tickets = Table(
+    "tickets",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("status", String(32), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+ticket_messages = Table(
+    "ticket_messages",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ticket_id", Integer, ForeignKey("tickets.id"), nullable=False),
+    Column("role", String(32), nullable=False),
+    Column("content", String(2000), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
 )
