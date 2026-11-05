@@ -21,7 +21,9 @@ def test_upgrade_head_creates_schema_version_table(tmp_path: Path) -> None:
     command.upgrade(_alembic_config(database_path), "head")
 
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert "schema_version" in inspect(engine).get_table_names()
+    table_names = inspect(engine).get_table_names()
+    assert "schema_version" in table_names
+    assert "orders" in table_names
 
 
 def test_upgrade_head_can_run_twice_without_error(tmp_path: Path) -> None:
@@ -35,4 +37,6 @@ def test_upgrade_head_can_run_twice_without_error(tmp_path: Path) -> None:
     command.upgrade(config, "head")
 
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
-    assert "schema_version" in inspect(engine).get_table_names()
+    table_names = inspect(engine).get_table_names()
+    assert "schema_version" in table_names
+    assert "orders" in table_names

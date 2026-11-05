@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import get_settings
 from app.errors import AppError, app_error_handler, error_response
 from app.logging_config import configure_logging
+from app.orders import router as orders_router
 
 # 做什么：在应用启动时读取配置并初始化日志器。
 # 为什么：路由和中间件都需要相同的配置与日志规则，不能分散初始化。
@@ -16,11 +17,32 @@ from app.logging_config import configure_logging
 settings = get_settings()
 logger = configure_logging(settings.log_level)
 
+
+class UTF8JSONResponse(JSONResponse):
+    """为 JSON 响应显式声明 UTF-8 字符集。
+
+    做什么：将默认 Content-Type 设置为 application/json; charset=utf-8。
+    为什么：Windows PowerShell 需要该声明才能稳定按 UTF-8 解码中文 JSON 字段。
+    结果：Invoke-RestMethod 显示订单中文字段时不会按本地代码页产生乱码。
+    """
+
+    media_type = "application/json; charset=utf-8"
+
+
 # 做什么：创建 FastAPI 应用并注册业务异常处理器。
 # 为什么：后续所有接口都应使用同一个应用实例与统一错误契约。
 # 结果：路由抛出 AppError 时会自动转换为项目规定的 JSON 响应。
-app = FastAPI(title=settings.app_name, version="0.1.0")
+app = FastAPI(
+    title=settings.app_name,
+    version="0.1.0",
+    default_response_class=UTF8JSONResponse,
+)
 app.add_exception_handler(AppError, app_error_handler)
+
+# 做什么：注册订单查询路由到全局 FastAPI 应用。
+# 为什么：订单接口需要复用全局请求 ID、日志和统一 AppError 响应处理。
+# 结果：GET /api/v1/orders/{order_no} 可由同一应用实例处理并遵循既有 API 契约。
+app.include_router(orders_router)
 
 
 @app.middleware("http")
