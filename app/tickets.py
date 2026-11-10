@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import get_database_session
 from app.errors import AppError
 from app.models import ticket_messages, tickets
+from app.ticket_status import transition_ticket_status
 
 router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
 
@@ -75,6 +76,22 @@ class TicketDetailResponse(BaseModel):
     messages: list[TicketMessageResponse]
 
 
+class AppendedTicketMessageResponse(BaseModel):
+    """定义追加消息后返回的消息与工单状态。
+
+    做什么：描述新增消息、所属工单和本次状态流转后的状态。
+    为什么：客户端追加信息后需要立即确认消息编号及工单是否进入处理阶段。
+    结果：POST /api/v1/tickets/{ticket_id}/messages 返回 N06 约定的六个字段。
+    """
+
+    id: int
+    ticket_id: int
+    role: str
+    content: str
+    created_at: str
+    ticket_status: str
+
+
 def format_utc_datetime(value: datetime) -> str:
     # 做什么：将数据库时间标准化为带 Z 后缀的 UTC ISO 8601 字符串。
     # 为什么：MySQL 与 SQLite 对时区信息的保留方式不同，接口响应需要保持同一时间格式。
@@ -112,6 +129,69 @@ def create_ticket(
         status="OPEN",
         message=request.message,
         created_at=format_utc_datetime(created_at),
+    )
+
+
+@router.post(
+    "/{ticket_id}/messages",
+    response_model=AppendedTicketMessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def append_ticket_message(
+    ticket_id: int,
+    request: CreateTicketRequest,
+    session: Session = Depends(get_database_session),
+) -> AppendedTicketMessageResponse:
+    # 做什么：根据工单当前状态追加 USER 消息，必要时通过状态服务从 OPEN 进入 PROCESSING。
+    # 为什么：处理中和待审核工单可以补充信息但不得绕过状态机；已解决和已关闭工单不能再写入。
+    # 结果：消息写入与 OPEN 状态流转保持原子性，终态工单不会产生新消息或状态变化。
+    created_at = datetime.now(timezone.utc)
+    with session.begin():
+        ticket = session.execute(
+            select(tickets).where(tickets.c.id == ticket_id).with_for_update()
+        ).mappings().one_or_none()
+        if ticket is None:
+            raise AppError("ticket_not_found", "Ticket not found", 404)
+
+        current_status = ticket["status"]
+        # 做什么：仅在首次补充 OPEN 工单时调用状态服务执行到 PROCESSING 的合法流转。
+        # 为什么：路由不能直接修改状态，且 PROCESSING/PENDING_REVIEW 追加消息不属于新的状态流转。
+        # 结果：OPEN 工单进入 PROCESSING，处理中和待审核工单在追加消息后维持原状态。
+        if current_status == "OPEN":
+            ticket_status = transition_ticket_status(
+                session,
+                ticket_id,
+                current_status,
+                "PROCESSING",
+            )
+        elif current_status in {"PROCESSING", "PENDING_REVIEW"}:
+            ticket_status = current_status
+        else:
+            # 做什么：拒绝向 RESOLVED、CLOSED 或未知状态的工单追加消息。
+            # 为什么：终态工单不能重新处理，未知状态也不能在未定义的规则下继续写入数据。
+            # 结果：异常导致当前事务回滚，数据库不会新增消息或改变工单状态。
+            raise AppError(
+                "invalid_ticket_transition",
+                f"Cannot append message to ticket in {current_status} status",
+                400,
+            )
+        message_result = session.execute(
+            insert(ticket_messages).values(
+                ticket_id=ticket_id,
+                role="USER",
+                content=request.message,
+                created_at=created_at,
+            )
+        )
+        message_id = message_result.inserted_primary_key[0]
+
+    return AppendedTicketMessageResponse(
+        id=message_id,
+        ticket_id=ticket_id,
+        role="USER",
+        content=request.message,
+        created_at=format_utc_datetime(created_at),
+        ticket_status=ticket_status,
     )
 
 

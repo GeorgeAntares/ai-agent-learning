@@ -1,15 +1,19 @@
 from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import get_database_session
 from app.main import app
+from app.errors import AppError
+from app.models import tickets
+from app.ticket_status import transition_ticket_status
 from app.tickets import CreateTicketRequest, create_ticket
 
 
@@ -61,6 +65,10 @@ def ticket_client(tmp_path: Path) -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_database_session] = override_database_session
     with TestClient(app) as client:
+        # 做什么：将隔离数据库的会话工厂提供给本测试文件的状态准备步骤。
+        # 为什么：CLOSED 状态是 N06 的非法流转前置条件，需要在不增加测试专用接口的情况下写入。
+        # 结果：测试可以直接准备已关闭工单，再通过真实 HTTP 路由验证业务错误响应。
+        client.ticket_session_factory = session_factory  # type: ignore[attr-defined]
         yield client
     app.dependency_overrides.clear()
     engine.dispose()
@@ -151,3 +159,221 @@ def test_get_unknown_ticket_returns_uniform_not_found_error(ticket_client: TestC
         "message": "Ticket not found",
         "request_id": "ticket-test-request-id",
     }
+
+
+def test_append_message_persists_user_message_and_moves_open_ticket_to_processing(
+    ticket_client: TestClient,
+) -> None:
+    # 做什么：创建工单后通过追加消息接口补充订单号，并读取工单详情。
+    # 为什么：N06 必须保证消息写入原工单，并将 OPEN 状态流转为 PROCESSING。
+    # 结果：追加接口返回第二条 USER 消息，详情按创建顺序返回两条消息和 PROCESSING 状态。
+    created = ticket_client.post("/api/v1/tickets", json={"message": "订单还没到"})
+    ticket_id = created.json()["id"]
+
+    appended = ticket_client.post(
+        f"/api/v1/tickets/{ticket_id}/messages",
+        json={"message": "订单号是 202511150001"},
+    )
+    detail = ticket_client.get(f"/api/v1/tickets/{ticket_id}")
+
+    assert appended.status_code == 201
+    assert appended.json() == {
+        "id": 2,
+        "ticket_id": ticket_id,
+        "role": "USER",
+        "content": "订单号是 202511150001",
+        "created_at": appended.json()["created_at"],
+        "ticket_status": "PROCESSING",
+    }
+    assert appended.json()["created_at"].endswith("Z")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "PROCESSING"
+    assert [message["content"] for message in detail.json()["messages"]] == [
+        "订单还没到",
+        "订单号是 202511150001",
+    ]
+    assert [message["role"] for message in detail.json()["messages"]] == ["USER", "USER"]
+
+
+@pytest.mark.parametrize("message", ["", "   "])
+def test_append_message_rejects_blank_content(ticket_client: TestClient, message: str) -> None:
+    # 做什么：向已有工单追加空字符串和只含空格的消息。
+    # 为什么：追加消息与创建首条消息使用相同的有效内容规则，不能保存无意义记录。
+    # 结果：两种无效请求均返回统一 validation_error、英文提示和请求 ID。
+    created = ticket_client.post("/api/v1/tickets", json={"message": "订单还没到"})
+    ticket_id = created.json()["id"]
+
+    response = ticket_client.post(
+        f"/api/v1/tickets/{ticket_id}/messages",
+        json={"message": message},
+        headers={"X-Request-ID": "append-validation-request-id"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "validation_error",
+        "message": "Request validation failed",
+        "request_id": "append-validation-request-id",
+    }
+
+
+def test_append_message_returns_not_found_for_unknown_ticket(ticket_client: TestClient) -> None:
+    # 做什么：向不存在的工单编号追加一条正常消息。
+    # 为什么：追加消息只能使用已有工单，不能隐式创建任何新的工单记录。
+    # 结果：接口返回 ticket_not_found 和调用方传入的请求 ID。
+    response = ticket_client.post(
+        "/api/v1/tickets/999/messages",
+        json={"message": "订单号是 202511150001"},
+        headers={"X-Request-ID": "append-missing-request-id"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "code": "ticket_not_found",
+        "message": "Ticket not found",
+        "request_id": "append-missing-request-id",
+    }
+
+
+@pytest.mark.parametrize("current_status", ["PROCESSING", "PENDING_REVIEW"])
+def test_append_message_keeps_message_writable_status_unchanged(
+    ticket_client: TestClient,
+    current_status: str,
+) -> None:
+    # 做什么：准备处理中和待审核工单，并分别追加一条用户消息。
+    # 为什么：这两种状态允许补充信息，但追加消息不是新的状态流转，状态必须原样保留。
+    # 结果：接口写入第二条 USER 消息并返回与数据库一致的原状态。
+    created = ticket_client.post("/api/v1/tickets", json={"message": "订单还没到"})
+    ticket_id = created.json()["id"]
+    session_factory = ticket_client.ticket_session_factory  # type: ignore[attr-defined]
+    with session_factory() as session:
+        session.execute(
+            update(tickets).where(tickets.c.id == ticket_id).values(status=current_status)
+        )
+        session.commit()
+
+    with patch("app.tickets.transition_ticket_status") as transition:
+        response = ticket_client.post(
+            f"/api/v1/tickets/{ticket_id}/messages",
+            json={"message": "补充订单信息"},
+        )
+    detail = ticket_client.get(f"/api/v1/tickets/{ticket_id}")
+
+    assert response.status_code == 201
+    assert transition.called is False
+    assert response.json()["ticket_status"] == current_status
+    assert detail.json()["status"] == current_status
+    assert [message["content"] for message in detail.json()["messages"]] == [
+        "订单还没到",
+        "补充订单信息",
+    ]
+
+
+@pytest.mark.parametrize("current_status", ["RESOLVED", "CLOSED"])
+def test_append_message_rejects_resolved_or_closed_ticket(ticket_client: TestClient, current_status: str) -> None:
+    # 做什么：准备 RESOLVED 和 CLOSED 工单后尝试追加用户消息。
+    # 为什么：已解决或已关闭的工单不应重新进入处理流程，也不能继续累积消息。
+    # 结果：接口返回专用非法追加错误，数据库状态和消息数量保持不变。
+    created = ticket_client.post("/api/v1/tickets", json={"message": "订单还没到"})
+    ticket_id = created.json()["id"]
+    session_factory = ticket_client.ticket_session_factory  # type: ignore[attr-defined]
+    with session_factory() as session:
+        session.execute(
+            update(tickets).where(tickets.c.id == ticket_id).values(status=current_status)
+        )
+        session.commit()
+
+    response = ticket_client.post(
+        f"/api/v1/tickets/{ticket_id}/messages",
+        json={"message": "订单号是 202511150001"},
+        headers={"X-Request-ID": "terminal-ticket-request-id"},
+    )
+    detail = ticket_client.get(f"/api/v1/tickets/{ticket_id}")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "invalid_ticket_transition",
+        "message": f"Cannot append message to ticket in {current_status} status",
+        "request_id": "terminal-ticket-request-id",
+    }
+    assert detail.json()["status"] == current_status
+    assert len(detail.json()["messages"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("current_status", "target_status"),
+    [
+        ("OPEN", "PROCESSING"),
+        ("PROCESSING", "PENDING_REVIEW"),
+        ("PROCESSING", "RESOLVED"),
+        ("PENDING_REVIEW", "RESOLVED"),
+        ("PENDING_REVIEW", "CLOSED"),
+        ("RESOLVED", "CLOSED"),
+    ],
+)
+def test_transition_ticket_status_allows_each_configured_transition(
+    ticket_client: TestClient,
+    current_status: str,
+    target_status: str,
+) -> None:
+    # 做什么：逐条执行状态机声明的合法状态流转，并读取实际数据库状态。
+    # 为什么：状态规则不是仅供追加消息使用，任一合法边被误删都会破坏后续售后流程。
+    # 结果：六条规定的状态边均由状态服务写入并返回对应目标状态。
+    created = ticket_client.post("/api/v1/tickets", json={"message": "订单还没到"})
+    ticket_id = created.json()["id"]
+    session_factory = ticket_client.ticket_session_factory  # type: ignore[attr-defined]
+
+    with session_factory() as session:
+        with session.begin():
+            session.execute(
+                update(tickets).where(tickets.c.id == ticket_id).values(status=current_status)
+            )
+            result = transition_ticket_status(session, ticket_id, current_status, target_status)
+
+    with session_factory() as session:
+        persisted_status = session.execute(
+            select(tickets.c.status).where(tickets.c.id == ticket_id)
+        ).scalar_one()
+
+    assert result == target_status
+    assert persisted_status == target_status
+
+
+@pytest.mark.parametrize(
+    ("current_status", "target_status"),
+    [
+        ("OPEN", "CLOSED"),
+        ("RESOLVED", "PROCESSING"),
+        ("CLOSED", "PROCESSING"),
+    ],
+)
+def test_transition_ticket_status_rejects_illegal_transition(
+    ticket_client: TestClient,
+    current_status: str,
+    target_status: str,
+) -> None:
+    # 做什么：针对代表性跳级、逆向和终态恢复操作调用状态服务。
+    # 为什么：状态机必须拒绝未声明的边，特别是 CLOSED 工单不得重新进入处理状态。
+    # 结果：服务抛出带有源状态和目标状态的 invalid_ticket_transition 业务错误。
+    created = ticket_client.post("/api/v1/tickets", json={"message": "订单还没到"})
+    ticket_id = created.json()["id"]
+    session_factory = ticket_client.ticket_session_factory  # type: ignore[attr-defined]
+
+    with session_factory() as session:
+        with session.begin():
+            session.execute(
+                update(tickets).where(tickets.c.id == ticket_id).values(status=current_status)
+            )
+            with pytest.raises(AppError) as error:
+                transition_ticket_status(session, ticket_id, current_status, target_status)
+
+    with session_factory() as session:
+        persisted_status = session.execute(
+            select(tickets.c.status).where(tickets.c.id == ticket_id)
+        ).scalar_one()
+
+    assert error.value.code == "invalid_ticket_transition"
+    assert error.value.message == (
+        f"Cannot transition ticket from {current_status} to {target_status}"
+    )
+    assert persisted_status == current_status
