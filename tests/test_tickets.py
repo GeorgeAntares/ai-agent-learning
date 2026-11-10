@@ -10,6 +10,35 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import get_database_session
 from app.main import app
+from app.tickets import CreateTicketRequest, create_ticket
+
+
+class _InsertedTicketResult:
+    inserted_primary_key = (1,)
+
+
+class _TransactionSession:
+    """以最小替身确认创建接口通过 Session 事务上下文写入数据。"""
+
+    def __init__(self) -> None:
+        self.begin_called = False
+        self.execute_count = 0
+
+    def begin(self) -> "_TransactionSession":
+        self.begin_called = True
+        return self
+
+    def __enter__(self) -> "_TransactionSession":
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        pass
+
+    def execute(self, statement: object) -> _InsertedTicketResult | None:
+        self.execute_count += 1
+        if self.execute_count == 1:
+            return _InsertedTicketResult()
+        return None
 
 
 @pytest.fixture
@@ -49,6 +78,18 @@ def test_create_ticket_returns_open_ticket_with_first_user_message(ticket_client
     assert body["status"] == "OPEN"
     assert body["message"] == "订单还没到"
     assert body["created_at"].endswith("Z")
+
+
+def test_create_ticket_writes_ticket_and_message_in_session_transaction() -> None:
+    # 做什么：直接调用创建工单函数，并提供只支持 begin 上下文的会话替身。
+    # 为什么：工单与首条消息必须在同一个显式事务中写入。
+    # 结果：函数通过 session.begin() 执行两次写入，而非自行调用 commit()。
+    session = _TransactionSession()
+
+    create_ticket(CreateTicketRequest(message="订单还没到"), session)
+
+    assert session.begin_called is True
+    assert session.execute_count == 2
 
 
 def test_get_ticket_returns_persisted_first_user_message(ticket_client: TestClient) -> None:

@@ -93,19 +93,19 @@ def create_ticket(
     # 为什么：工单和首条消息必须同时成功或同时失败，不能留下没有问题内容的孤立工单。
     # 结果：客户端收到可查询的自增工单编号和本次提交的首条消息。
     created_at = datetime.now(timezone.utc)
-    ticket_result = session.execute(
-        insert(tickets).values(status="OPEN", created_at=created_at)
-    )
-    ticket_id = ticket_result.inserted_primary_key[0]
-    session.execute(
-        insert(ticket_messages).values(
-            ticket_id=ticket_id,
-            role="USER",
-            content=request.message,
-            created_at=created_at,
+    with session.begin():
+        ticket_result = session.execute(
+            insert(tickets).values(status="OPEN", created_at=created_at)
         )
-    )
-    session.commit()
+        ticket_id = ticket_result.inserted_primary_key[0]
+        session.execute(
+            insert(ticket_messages).values(
+                ticket_id=ticket_id,
+                role="USER",
+                content=request.message,
+                created_at=created_at,
+            )
+        )
 
     return CreatedTicketResponse(
         id=ticket_id,
