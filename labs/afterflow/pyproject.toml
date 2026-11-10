@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# 做什么：声明项目的基础元数据与运行依赖。
+# 为什么：新开发者和部署环境需要根据同一份清单安装兼容依赖。
+# 结果：pip 能识别项目名称、Python 版本要求和启动服务所需的库。
+name = "afterflow-agent"
+version = "0.1.0"
+description = "After-sales service workflow API"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.14,<2.0",
+    "fastapi>=0.115,<1.0",
+    "pydantic-settings>=2.6,<3.0",
+    "PyMySQL>=1.1,<2.0",
+    "SQLAlchemy>=2.0,<3.0",
+    "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+# 做什么：声明仅在开发和测试阶段需要的额外依赖。
+# 为什么：生产运行服务不需要 pytest 等测试工具，分开声明可保持运行环境精简。
+# 结果：执行 pip install -e ".[dev]" 会额外安装 pytest 和 httpx。
+dev = [
+    "httpx>=0.27,<1.0",
+    "pytest>=8,<10",
+]
+
+# 做什么：限制 setuptools 只将应用源码识别为可安装包。
+# 为什么：Alembic 的迁移目录是运行时脚本，不应被当作第二个顶层 Python 包。
+# 结果：pip install . 可同时复制迁移文件且不会触发多包自动发现错误。
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+# 做什么：指定 pytest 搜索测试文件的目录。
+# 为什么：避免 pytest 扫描无关文件，确保测试结构清晰且执行可预测。
+# 结果：运行 pytest 时会从 tests 文件夹发现并执行测试。
+testpaths = ["tests"]

@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.env
+项目面试答辩要点.md
+开发日程表.md
+需求文档.md
+技术文档.md
+
+# 做什么：忽略测试运行时创建的临时目录和覆盖率报告。
+# 为什么：这些文件只反映本机一次测试执行结果，其他开发者可以重新生成。
+# 结果：Git 状态只展示需要协作的源码、迁移、测试与配置模板改动。
+.codex-test-tmp-*/
+.coverage
+coverage.xml
+htmlcov/
