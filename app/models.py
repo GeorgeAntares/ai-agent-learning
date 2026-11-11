@@ -36,3 +36,16 @@ ticket_messages = Table(
     Column("content", String(2000), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
+
+# 做什么：声明订单物流轨迹事件的只读查询表结构。
+# 为什么：物流节点与订单基础信息独立演进，服务需要参数化地按订单号和发生时间读取事件。
+# 结果：LogisticsService 可返回不含手机号、地址等订单隐私字段的最小物流数据集。
+logistics_events = Table(
+    "logistics_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("order_no", String(32), nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
+    Column("status", String(64), nullable=False),
+    Column("description", String(500), nullable=False),
+)

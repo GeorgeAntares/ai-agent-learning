@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import get_settings
 from app.errors import AppError, app_error_handler, error_response
 from app.logging_config import configure_logging
+from app.logistics import router as logistics_router
 from app.orders import router as orders_router
 from app.tickets import router as tickets_router
 
@@ -49,6 +50,11 @@ app.include_router(orders_router)
 # 为什么：工单接口需要复用全局请求 ID、日志和统一 AppError 响应处理。
 # 结果：POST /api/v1/tickets 与 GET /api/v1/tickets/{id} 使用项目一致的 API 契约。
 app.include_router(tickets_router)
+
+# 做什么：注册仅供本地开发验证的物流查询路由到全局 FastAPI 应用。
+# 为什么：Swagger 和手动验收需要调用 LogisticsService，但路由不得直接访问物流事件表。
+# 结果：GET /internal/logistics/{order_no} 使用项目统一的请求 ID 和错误响应机制。
+app.include_router(logistics_router)
 
 
 @app.middleware("http")
