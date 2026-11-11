@@ -40,7 +40,7 @@ services:
       MYSQL_HOST: mysql
       REDIS_HOST: redis
     ports:
-      - "8000:8000"
+      - "18001:8000"
     depends_on:
       mysql:
         condition: service_healthy
