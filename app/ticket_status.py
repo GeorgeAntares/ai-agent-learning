@@ -8,7 +8,7 @@ from app.models import tickets
 # 为什么：状态规则必须集中维护，避免每个路由各自判断而产生不一致的业务流程。
 # 结果：任何调用方都只能执行 OPEN、PROCESSING、PENDING_REVIEW、RESOLVED、CLOSED 的合法流转。
 ALLOWED_TICKET_TRANSITIONS = {
-    "OPEN": {"PROCESSING"},
+    "OPEN": {"PROCESSING", "PENDING_REVIEW"},
     "PROCESSING": {"PENDING_REVIEW", "RESOLVED"},
     "PENDING_REVIEW": {"RESOLVED", "CLOSED"},
     "RESOLVED": {"CLOSED"},

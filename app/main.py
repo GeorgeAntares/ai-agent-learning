@@ -12,6 +12,7 @@ from app.logging_config import configure_logging
 from app.logistics import router as logistics_router
 from app.orders import router as orders_router
 from app.policies import router as policies_router
+from app.triage import router as handoffs_router
 from app.tickets import router as tickets_router
 
 # 做什么：在应用启动时读取配置并初始化日志器。
@@ -61,6 +62,11 @@ app.include_router(logistics_router)
 # 为什么：Swagger 和后续 Agent 必须通过 PolicyService 获取政策依据，不能直接读取知识文件。
 # 结果：GET /internal/policies/search 返回类型固定的政策编号、标题和原文片段。
 app.include_router(policies_router)
+
+# 做什么：注册规则分诊和安全转人工路由到全局 FastAPI 应用。
+# 为什么：售后消息必须通过 TriageService 和 HandoffService 处理，不能由路由直接判断风险或写数据库。
+# 结果：POST /api/v1/handoffs 返回统一分诊结果，并在必要时创建高优先级人工待办。
+app.include_router(handoffs_router)
 
 
 @app.middleware("http")

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, MetaData, Numeric, String, Table
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, MetaData, Numeric, String, Table
 
 # 做什么：集中声明当前 API 查询需要的数据库表结构。
 # 为什么：迁移以外的查询代码需要类型化、可复用的列定义，而不能拼接 SQL 字符串。
@@ -48,4 +48,25 @@ logistics_events = Table(
     Column("occurred_at", DateTime(timezone=True), nullable=False),
     Column("status", String(64), nullable=False),
     Column("description", String(500), nullable=False),
+)
+
+# 做什么：声明投诉风险等场景使用的人工待办表结构。
+# 为什么：工单状态不足以表达人工处理原因、优先级和分配进度，需要独立保留待办记录。
+# 结果：HandoffService 可为工单创建、去重并查询具有固定优先级和处理状态的人工待办。
+handoffs = Table(
+    "handoffs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ticket_id", Integer, ForeignKey("tickets.id"), nullable=False),
+    Column("reason_code", String(64), nullable=False),
+    Column("reason_detail", String(1000), nullable=False),
+    Column("priority", String(16), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("priority IN ('LOW', 'NORMAL', 'HIGH')", name="ck_handoffs_priority"),
+    CheckConstraint(
+        "status IN ('PENDING', 'ASSIGNED', 'RESOLVED')",
+        name="ck_handoffs_status",
+    ),
 )

@@ -27,6 +27,7 @@ def test_upgrade_head_creates_schema_version_table(tmp_path: Path) -> None:
     assert "tickets" in table_names
     assert "ticket_messages" in table_names
     assert "logistics_events" in table_names
+    assert "handoffs" in table_names
 
 
 def test_upgrade_head_can_run_twice_without_error(tmp_path: Path) -> None:
@@ -46,3 +47,4 @@ def test_upgrade_head_can_run_twice_without_error(tmp_path: Path) -> None:
     assert "tickets" in table_names
     assert "ticket_messages" in table_names
     assert "logistics_events" in table_names
+    assert "handoffs" in table_names
