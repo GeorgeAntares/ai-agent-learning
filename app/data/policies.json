@@ -1,0 +1,32 @@
+[
+  {
+    "policy_id": "REFUND_TIME_LIMIT",
+    "title": "退款时限规则",
+    "content": "退款审核通过后，原支付渠道通常会在 3 至 10 个工作日内到账。",
+    "keywords": ["退款", "到账", "时限", "审核"]
+  },
+  {
+    "policy_id": "RETURN_SHIPPING_FEE",
+    "title": "退货运费规则",
+    "content": "非质量问题退货，退货运费由用户承担；商品质量问题由商家承担。",
+    "keywords": ["退货", "运费", "承担", "质量问题"]
+  },
+  {
+    "policy_id": "RETURN_CONDITIONS",
+    "title": "退货条件规则",
+    "content": "商品未影响二次销售且包装、配件齐全的，可以申请退货；商品拆封后如不影响二次销售，仍可按规则申请退货。",
+    "keywords": ["退货", "条件", "拆封", "二次销售"]
+  },
+  {
+    "policy_id": "QUALITY_ISSUE_HANDLING",
+    "title": "商品质量问题处理规则",
+    "content": "商品存在质量问题的，用户可在签收后七日内提交问题说明和照片，由售后人员核实处理。",
+    "keywords": ["质量问题", "质量", "照片", "签收"]
+  },
+  {
+    "policy_id": "EXCHANGE_RULES",
+    "title": "换货规则",
+    "content": "符合退换条件的商品可申请换货；换货商品库存不足时，用户可选择等待补货或申请退款。",
+    "keywords": ["换货", "库存", "补货", "退款"]
+  }
+]
