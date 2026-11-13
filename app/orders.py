@@ -53,22 +53,42 @@ def format_amount(amount: Decimal) -> str:
 
 @router.get("/{order_no}", response_model=OrderResponse)
 def get_order(order_no: str, session: Session = Depends(get_database_session)) -> OrderResponse:
-    # 做什么：按唯一订单号查询演示订单，并返回允许公开的脱敏字段。
-    # 为什么：订单号是本节点唯一查询条件，收件人信息必须在响应构造时完成脱敏。
-    # 结果：存在的订单返回 200；不存在时返回带 request_id 的统一 404 错误。
-    order = session.execute(
-        select(orders).where(orders.c.order_no == order_no)
-    ).mappings().one_or_none()
+    # 做什么：委托订单服务按唯一订单号读取并返回脱敏订单。
+    # 为什么：API、ToolGateway 和未来 Agent 必须共用同一查询及隐私保护逻辑。
+    # 结果：订单接口与受限工具入口返回相同的订单契约和受控未找到错误。
+    return OrderService(session).get_order(order_no)
 
-    if order is None:
-        raise AppError("order_not_found", "Order not found", 404)
 
-    return OrderResponse(
-        order_no=order["order_no"],
-        product_name=order["product_name"],
-        order_status=order["order_status"],
-        amount=format_amount(order["amount"]),
-        logistics_status=order["logistics_status"],
-        receiver_phone=mask_phone(order["receiver_phone"]),
-        receiver_address=mask_address(order["receiver_address"]),
-    )
+class OrderService:
+    """封装订单查询与收货信息脱敏的唯一服务入口。
+
+    做什么：集中读取订单、格式化金额并在返回前脱敏敏感收货字段。
+    为什么：路由和 Agent 工具不能各自查询订单或处理隐私字段，避免保护规则分叉。
+    结果：所有调用方获得统一的 OrderResponse，原始手机号和完整地址不会离开服务层。
+    """
+
+    def __init__(self, session: Session) -> None:
+        # 做什么：保存调用方提供的数据库会话。
+        # 为什么：服务需要复用请求或 Gateway 的会话，不能自行建立不受控数据库连接。
+        # 结果：订单读取可参与现有会话生命周期，并由外层统一关闭连接。
+        self._session = session
+
+    def get_order(self, order_no: str) -> OrderResponse:
+        # 做什么：按唯一订单号查询订单并构建允许公开的脱敏响应。
+        # 为什么：查询逻辑和隐私过滤必须由服务层统一执行，避免 Agent 或路由直接读取原始字段。
+        # 结果：存在订单返回标准 OrderResponse；不存在时抛出 order_not_found 业务错误。
+        order = self._session.execute(
+            select(orders).where(orders.c.order_no == order_no)
+        ).mappings().one_or_none()
+        if order is None:
+            raise AppError("order_not_found", "Order not found", 404)
+
+        return OrderResponse(
+            order_no=order["order_no"],
+            product_name=order["product_name"],
+            order_status=order["order_status"],
+            amount=format_amount(order["amount"]),
+            logistics_status=order["logistics_status"],
+            receiver_phone=mask_phone(order["receiver_phone"]),
+            receiver_address=mask_address(order["receiver_address"]),
+        )

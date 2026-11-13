@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
+from app.agent import router as agent_router
 from app.errors import AppError, app_error_handler, error_response
 from app.logging_config import configure_logging
 from app.logistics import router as logistics_router
@@ -42,6 +43,11 @@ app = FastAPI(
     default_response_class=UTF8JSONResponse,
 )
 app.add_exception_handler(AppError, app_error_handler)
+
+# 做什么：注册仅供本地开发验证的 Fake Agent 路由到全局 FastAPI 应用。
+# 为什么：Agent 调用链需要经 ToolGateway 访问已登记服务，不能在路由或 Agent 中直接查询业务数据。
+# 结果：POST /internal/agent/fake 返回合法决策以及 Gateway 提供的真实只读工具结果。
+app.include_router(agent_router)
 
 # 做什么：注册订单查询路由到全局 FastAPI 应用。
 # 为什么：订单接口需要复用全局请求 ID、日志和统一 AppError 响应处理。
