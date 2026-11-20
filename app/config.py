@@ -2,6 +2,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import quote_plus
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,15 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_database: int = 0
 
+    # 做什么：声明自动处置工作流使用的 Agent 提供方和真实模型连接配置。
+    # 为什么：本地测试必须默认使用 FakeAgent，真实模型只能在显式完整配置后启用。
+    # 结果：缺失 LLM 必填参数会在应用启动时失败，API Key 不会进入业务代码或响应。
+    agent_provider: Literal["fake", "llm"] = "fake"
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str | None = None
+    llm_timeout_seconds: float = 15
+
     # 做什么：指定配置读取的本地文件及其编码。
     # 为什么：.env 保存本机配置且不提交 Git，.env.example 只提供可共享的模板。
     # 结果：启动时自动读取 .env；缺少 app_name 等必填配置会立即报错。
@@ -40,6 +50,19 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_llm_configuration(self) -> "Settings":
+        # 做什么：在选择 llm 提供方时检查模型地址、密钥和模型名是否完整。
+        # 为什么：半配置的真实模型会在工单处理中才失败，不利于及早发现部署错误。
+        # 结果：AGENT_PROVIDER=llm 缺少任一必填项时，进程启动阶段明确报错。
+        if self.agent_provider == "llm" and not all(
+            (self.llm_base_url, self.llm_api_key, self.llm_model)
+        ):
+            raise ValueError(
+                "LLM_BASE_URL, LLM_API_KEY and LLM_MODEL are required when AGENT_PROVIDER=llm"
+            )
+        return self
 
     @property
     def database_url(self) -> str:

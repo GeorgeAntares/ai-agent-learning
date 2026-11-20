@@ -1,7 +1,9 @@
+import json
 import re
 from dataclasses import dataclass
 from typing import Annotated, Any, Callable, Literal, Protocol
 
+import httpx
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 from sqlalchemy.orm import Session
@@ -17,7 +19,7 @@ router = APIRouter(prefix="/internal/agent", tags=["internal-agent"])
 _ORDER_NUMBER_PATTERN = re.compile(r"(?<![0-9])([0-9]{12})(?![0-9])")
 _POLICY_WORDS = ("退款", "退货", "运费", "换货")
 _ORDER_WORDS = ("订单",)
-_LOGISTICS_WORDS = ("物流", "快递")
+_LOGISTICS_WORDS = ("物流", "快递", "到哪里了")
 
 
 class GetOrderArguments(BaseModel):
@@ -107,6 +109,17 @@ AgentDecision = Annotated[ToolCallDecision | FinalDecision, Field(discriminator=
 AgentDecisionAdapter = TypeAdapter(AgentDecision)
 
 
+def parse_agent_decision(value: object) -> ToolCallDecision | FinalDecision:
+    # 做什么：将 FakeAgent 或 LLM 返回的原始数据解析为受限 AgentDecision。
+    # 为什么：模型决策必须先通过 Pydantic Schema，才能交给 Gateway 审核工具权限与参数。
+    # 结果：多余字段、缺失字段或错误 action 均转换为统一 invalid_agent_decision 业务错误。
+    raw_value = value.model_dump() if isinstance(value, BaseModel) else value
+    try:
+        return AgentDecisionAdapter.validate_python(raw_value)
+    except ValidationError as error:
+        raise AppError("invalid_agent_decision", "Invalid agent decision", 422) from error
+
+
 class AgentRequest(BaseModel):
     """定义内部 Fake Agent 验收路由的输入消息。
 
@@ -179,6 +192,66 @@ class FakeAgent:
         )
 
 
+class LLMAgent:
+    """通过 OpenAI 兼容接口获取受限 AgentDecision 的模型适配器。
+
+    做什么：向真实模型请求单个结构化决策，并在本地完成 Schema 校验。
+    为什么：模型只能申请工具，不能直接访问数据库、执行代码或伪造工具执行结果。
+    结果：合法输出变为 AgentDecision；超时、上游失败和非法结构均返回受控 AppError。
+    """
+
+    def __init__(self, base_url: str, api_key: str, model: str, timeout_seconds: float) -> None:
+        # 做什么：保存 OpenAI 兼容接口所需的运行时连接配置。
+        # 为什么：配置由启动层注入，适配器不能自行读取环境变量或记录敏感 API Key。
+        # 结果：每次请求仅将密钥放入 Authorization 头，不会写入日志或响应。
+        self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        self._api_key = api_key
+        self._model = model
+        self._timeout_seconds = timeout_seconds
+
+    def decide(self, message: str) -> ToolCallDecision | FinalDecision:
+        # 做什么：请求模型仅返回一个符合 AgentDecision JSON Schema 的决策对象。
+        # 为什么：最终客服回复由确定性 ReplyComposer 生成，模型不得输出任意文本或工具结果。
+        # 结果：工作流只能收到已验证的 TOOL_CALL 或 FINAL 决策，绝不接收 SQL、代码或 URL 指令。
+        payload = {
+            "model": self._model,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return exactly one JSON object matching this AgentDecision schema: "
+                        f"{json.dumps(AgentDecisionAdapter.json_schema(), ensure_ascii=True)}"
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+        }
+        try:
+            with httpx.Client(timeout=self._timeout_seconds) as client:
+                response = client.post(
+                    self._endpoint,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json=payload,
+                )
+        except httpx.TimeoutException as error:
+            raise AppError("llm_timeout", "LLM request timed out", 504) from error
+        except httpx.HTTPError as error:
+            raise AppError("llm_request_failed", "LLM request failed", 502) from error
+
+        if not response.is_success:
+            raise AppError("llm_request_failed", "LLM request failed", 502)
+        try:
+            content = response.json()["choices"][0]["message"]["content"]
+            decision = json.loads(content) if isinstance(content, str) else content
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+            raise AppError("invalid_agent_decision", "Invalid agent decision", 422) from error
+        parsed_decision = parse_agent_decision(decision)
+        if isinstance(parsed_decision, ToolCallDecision) and parsed_decision.tool_name not in TOOL_REGISTRY:
+            raise AppError("invalid_agent_decision", "Invalid agent decision", 422)
+        return parsed_decision
+
+
 class AgentDecisionProvider(Protocol):
     """声明可替换 Agent 决策提供方的最小协议。
 
@@ -187,7 +260,7 @@ class AgentDecisionProvider(Protocol):
     结果：替换 FakeAgent 时不影响 Gateway 和业务服务的受限调用边界。
     """
 
-    def decide(self, message: str) -> object:
+    def decide(self, message: str) -> ToolCallDecision | FinalDecision:
         # 做什么：根据用户消息产生尚未获 Gateway 批准的原始 AgentDecision。
         # 为什么：决策提供方只描述申请内容，不能自行执行工具、数据库查询或任意 Python 函数。
         # 结果：AgentService 可对无论来自 FakeAgent 还是未来模型的决策统一执行 Schema 校验。
@@ -312,11 +385,7 @@ class AgentService:
         # 为什么：AgentService 不承担业务查询，必须将所有工具调用交给统一受限 Gateway。
         # 结果：FINAL 决策返回 null 工具结果；TOOL_CALL 返回 Gateway 的真实服务结果。
         decision = self._agent.decide(message)
-        raw_decision = decision.model_dump() if isinstance(decision, BaseModel) else decision
-        try:
-            parsed_decision = AgentDecisionAdapter.validate_python(raw_decision)
-        except ValidationError as error:
-            raise AppError("invalid_agent_decision", "Invalid agent decision", 422) from error
+        parsed_decision = parse_agent_decision(decision)
         if isinstance(parsed_decision, FinalDecision):
             return AgentResponse(decision=parsed_decision, tool_result=None)
         tool_result = ToolGateway(self._session).execute(parsed_decision)

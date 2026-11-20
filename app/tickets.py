@@ -9,6 +9,8 @@ from app.database import get_database_session
 from app.errors import AppError
 from app.models import ticket_messages, tickets
 from app.ticket_status import transition_ticket_status
+from app.workflow import TicketProcessResponse, TicketProcessingWorkflow, build_agent_provider
+from app.config import get_settings
 
 router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
 
@@ -193,6 +195,17 @@ def append_ticket_message(
         created_at=format_utc_datetime(created_at),
         ticket_status=ticket_status,
     )
+
+
+@router.post("/{ticket_id}/process", response_model=TicketProcessResponse)
+def process_ticket(
+    ticket_id: int,
+    session: Session = Depends(get_database_session),
+) -> TicketProcessResponse:
+    # 做什么：启动已有工单最新 USER 消息的低风险自动处置 LangGraph 工作流。
+    # 为什么：路由不能自行分诊、调用 Agent、执行工具或更新工单状态，避免绕开安全边界。
+    # 结果：低风险只读咨询得到已保存回复和 RESOLVED；风险或缺字段按 N09 规则安全结束。
+    return TicketProcessingWorkflow(session, build_agent_provider(get_settings())).run(ticket_id)
 
 
 @router.get("/{ticket_id}", response_model=TicketDetailResponse)
