@@ -78,7 +78,7 @@ def test_llm_provider_configuration_requires_complete_credentials() -> None:
     # 为什么：不完整配置应在启动时失败，不能等到处理工单时才暴露为运行时错误。
     # 结果：Settings 拒绝该配置，默认 fake 模式仍不要求任何真实模型凭据。
     with pytest.raises(ValueError):
-        Settings(app_name="afterflow-test", agent_provider="llm")
+        Settings(app_name="afterflow-test", agent_provider="llm", _env_file=None)
 
 
 def test_llm_agent_translates_request_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

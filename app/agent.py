@@ -13,6 +13,7 @@ from app.errors import AppError
 from app.logistics import LogisticsQuery, LogisticsService
 from app.orders import OrderService
 from app.policies import PolicyQuery, PolicyService
+from app.refunds import CreateRefundRequest, RefundService
 
 router = APIRouter(prefix="/internal/agent", tags=["internal-agent"])
 
@@ -65,6 +66,25 @@ class SearchPolicyArguments(BaseModel):
         # 结果：不合法 query 在工具执行前被转换为 invalid_tool_arguments。
         if not value.strip():
             raise ValueError("query must not be blank")
+        return value
+
+
+class CreateRefundRequestArguments(BaseModel):
+    """定义 create_refund_request 工具允许接收的严格参数。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    ticket_id: int = Field(ge=1)
+    order_no: str = Field(pattern=r"^[0-9]{12}$")
+    reason: str = Field(max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        # 做什么：拒绝空白退款原因。
+        # 为什么：Agent 工具只能提交可由人工审核的真实申请，不能创建无理由的待审核记录。
+        # 结果：空白原因在进入 RefundService 前被 Gateway 转换为 invalid_tool_arguments。
+        if not value.strip():
+            raise ValueError("reason must not be blank")
         return value
 
 
@@ -327,6 +347,21 @@ def _execute_search_policy(session: Session, arguments: BaseModel) -> list[dict[
     ]
 
 
+def _execute_create_refund_request(session: Session, arguments: BaseModel) -> dict[str, Any]:
+    # 做什么：通过 RefundService 创建或复用 PENDING_REVIEW 退款申请。
+    # 为什么：Gateway 只能提供用户申请入口，不能批准、模拟退款或直接写入退款终态。
+    # 结果：工具结果只包含待审核申请摘要，审核状态推进仍只能由受 Token 保护的人工接口完成。
+    refund_arguments = CreateRefundRequestArguments.model_validate(arguments)
+    refund_request, _ = RefundService(session).create_refund_request(
+        refund_arguments.ticket_id,
+        CreateRefundRequest(
+            order_no=refund_arguments.order_no,
+            reason=refund_arguments.reason,
+        ),
+    )
+    return refund_request.model_dump()
+
+
 # 做什么：集中登记 Agent 唯一允许调用的只读业务工具。
 # 为什么：白名单、参数模型、执行函数和启用状态必须统一维护，不能让 Agent 动态导入任意函数。
 # 结果：新增工具只需登记定义；Gateway 核心校验逻辑和 Agent 决策协议无需改动。
@@ -334,6 +369,11 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     "get_order": ToolDefinition(GetOrderArguments, _execute_get_order, "查询脱敏订单"),
     "get_logistics": ToolDefinition(GetLogisticsArguments, _execute_get_logistics, "查询物流轨迹"),
     "search_policy": ToolDefinition(SearchPolicyArguments, _execute_search_policy, "检索售后政策"),
+    "create_refund_request": ToolDefinition(
+        CreateRefundRequestArguments,
+        _execute_create_refund_request,
+        "创建待审核退款申请",
+    ),
 }
 
 

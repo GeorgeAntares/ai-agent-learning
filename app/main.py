@@ -13,6 +13,7 @@ from app.logging_config import configure_logging
 from app.logistics import router as logistics_router
 from app.orders import router as orders_router
 from app.policies import router as policies_router
+from app.refunds import router as refunds_router
 from app.triage import router as handoffs_router
 from app.tickets import router as tickets_router
 
@@ -73,6 +74,11 @@ app.include_router(policies_router)
 # 为什么：售后消息必须通过 TriageService 和 HandoffService 处理，不能由路由直接判断风险或写数据库。
 # 结果：POST /api/v1/handoffs 返回统一分诊结果，并在必要时创建高优先级人工待办。
 app.include_router(handoffs_router)
+
+# 做什么：注册退款申请与人工审批路由到全局 FastAPI 应用。
+# 为什么：退款闭环需要复用统一异常、请求 ID 和审核 Token 保护，不能单独创建应用实例。
+# 结果：用户可提交待审核退款，人工可在授权后完成本地模拟退款并关闭工单。
+app.include_router(refunds_router)
 
 
 @app.middleware("http")

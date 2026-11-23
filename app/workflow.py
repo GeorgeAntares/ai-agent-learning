@@ -21,6 +21,8 @@ from app.models import ticket_messages, tickets
 from app.ticket_status import transition_ticket_status
 from app.triage import HandoffRequest, HandoffService, TriageDecision, TriageService
 
+_N11_READ_ONLY_TOOL_NAMES = {"get_order", "get_logistics", "search_policy"}
+
 
 class TicketProcessResponse(BaseModel):
     """定义自动处置接口返回的处理结果。"""
@@ -51,6 +53,8 @@ class ReplyComposer:
         decision: ToolCallDecision | FinalDecision,
         tool_result: dict[str, Any] | list[dict[str, Any]] | None,
     ) -> str:
+        # 当前按if工具名选择对应的回复函数，三个工具时最容易阅读。
+        # 如果将来工具很多，可改为“工具名 -> 回复函数”的字典映射，避免持续增加 if 判断。
         # 做什么：按已批准工具类型将真实结果转换为固定客服回复。
         # 为什么：模型只能决定是否申请工具，不能自由生成可能编造事实的最终话术。
         # 结果：订单、物流和政策回复均有确定来源；FINAL 直接使用已校验的固定提示。
@@ -284,6 +288,11 @@ class TicketProcessingWorkflow:
         decision = state["agent_decision"]
         if isinstance(decision, FinalDecision):
             return {"tool_result": None}
+        # 做什么：在 N11 自动处置工作流中限制 Agent 只调用三个低风险只读查询工具。
+        # 为什么：全局 Gateway 可登记后续写工具，但 N11 的设计边界不能因登记新工具而被真实 LLM 扩大。
+        # 结果：退款创建等写工具即使已登记，也会在执行前被拒绝且不会使用模型提供的 ticket_id。
+        if decision.tool_name not in _N11_READ_ONLY_TOOL_NAMES:
+            raise AppError("tool_not_allowed", "Tool is not allowed", 400)
         with self._session.begin():
             tool_result = ToolGateway(self._session).execute(decision)
         return {"tool_result": tool_result}

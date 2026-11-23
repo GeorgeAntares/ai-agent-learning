@@ -1,4 +1,16 @@
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, MetaData, Numeric, String, Table
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    Computed,
+    DateTime,
+    ForeignKey,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Table,
+    UniqueConstraint,
+)
 
 # 做什么：集中声明当前 API 查询需要的数据库表结构。
 # 为什么：迁移以外的查询代码需要类型化、可复用的列定义，而不能拼接 SQL 字符串。
@@ -69,4 +81,39 @@ handoffs = Table(
         "status IN ('PENDING', 'ASSIGNED', 'RESOLVED')",
         name="ck_handoffs_status",
     ),
+)
+
+# 做什么：声明全额模拟退款申请及其审核状态记录表。
+# 为什么：退款申请、人工审核时间和模拟退款完成时间需要独立于工单状态持久化。
+# 结果：RefundService 可通过受约束字段完成申请、审批和关闭工单的完整闭环。
+refund_requests = Table(
+    "refund_requests",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ticket_id", Integer, ForeignKey("tickets.id"), nullable=False),
+    Column("order_no", String(12), nullable=False),
+    Column("reason", String(500), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("reviewer_note", String(500), nullable=True),
+    Column("reviewed_at", DateTime(timezone=True), nullable=True),
+    Column("refunded_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    # 做什么：仅为未结束退款申请计算关联工单编号，结束状态则计算为 NULL。
+    # 为什么：MySQL 不支持部分唯一索引，需要生成列和唯一约束防止同工单并发创建多个待审核申请。
+    # 结果：同一 ticket_id 最多一条 PENDING_REVIEW、APPROVED 或 REFUND_PROCESSING 申请。
+    Column(
+        "active_ticket_id",
+        Integer,
+        Computed(
+            "CASE WHEN status IN ('PENDING_REVIEW', 'APPROVED', 'REFUND_PROCESSING') "
+            "THEN ticket_id ELSE NULL END"
+        ),
+        nullable=True,
+    ),
+    CheckConstraint(
+        "status IN ('PENDING_REVIEW', 'APPROVED', 'REFUND_PROCESSING', 'REFUNDED', 'REJECTED')",
+        name="ck_refund_requests_status",
+    ),
+    UniqueConstraint("active_ticket_id", name="uq_refund_requests_active_ticket_id"),
 )

@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_timeout_seconds: float = 15
 
+    # 做什么：保存本地演示审批接口使用的专用审核 Token。
+    # 为什么：退款状态只能由人工审批接口推进，普通请求和 Agent 不应具备该权限。
+    # 结果：服务仅将 Token 用于请求头比较，不写入日志、响应、数据库或 Git。
+    reviewer_api_token: str | None = None
+
     # 做什么：指定配置读取的本地文件及其编码。
     # 为什么：.env 保存本机配置且不提交 Git，.env.example 只提供可共享的模板。
     # 结果：启动时自动读取 .env；缺少 app_name 等必填配置会立即报错。

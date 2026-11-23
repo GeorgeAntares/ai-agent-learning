@@ -235,3 +235,40 @@ def test_workflow_keeps_processing_without_assistant_message_when_tool_fails(
 
     assert status == "PROCESSING"
     assert roles == ["USER"]
+
+
+def test_n11_workflow_rejects_registered_refund_tool_from_agent(
+    processing_client: tuple[TestClient, sessionmaker[Session]],
+) -> None:
+    # 做什么：让注入的决策提供方为 N11 工单申请已登记的退款创建工具。
+    # 为什么：N11 仅处理低风险只读查询，真实模型不得借通用 Gateway 自行给其他工单创建退款申请。
+    # 结果：工作流拒绝退款工具，当前工单仅保留 PROCESSING 状态且不创建退款或助手消息。
+    class RefundToolAgent:
+        def decide(self, message: str):
+            return {
+                "action": "TOOL_CALL",
+                "tool_name": "create_refund_request",
+                "arguments": {
+                    "ticket_id": 999,
+                    "order_no": "202511150001",
+                    "reason": "模型不应创建退款",
+                },
+            }
+
+    client, session_factory = processing_client
+    ticket_id = _create_ticket(client, "查询订单 202511150001")
+    with session_factory() as session:
+        with pytest.raises(AppError) as error:
+            TicketProcessingWorkflow(session, RefundToolAgent()).run(ticket_id)
+
+    assert error.value.code == "tool_not_allowed"
+    with session_factory() as session:
+        status = session.execute(select(tickets.c.status).where(tickets.c.id == ticket_id)).scalar_one()
+        roles = session.execute(
+            select(ticket_messages.c.role)
+            .where(ticket_messages.c.ticket_id == ticket_id)
+            .order_by(ticket_messages.c.id)
+        ).scalars().all()
+
+    assert status == "PROCESSING"
+    assert roles == ["USER"]

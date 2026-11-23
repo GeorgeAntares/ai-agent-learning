@@ -3,7 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, field_validator
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from sqlalchemy.orm import Session
 
 from app.database import get_database_session
@@ -194,7 +194,17 @@ class HandoffService:
                         ticket_status,
                         "PENDING_REVIEW",
                     )
-                handoff_id = self._create_or_reuse_complaint_handoff(request)
+                risk_word = next(
+                    word for word in _COMPLAINT_RISK_WORDS if word.casefold() in request.message.casefold()
+                )
+                handoff_id = self.create_or_reuse_handoff(
+                    HandoffCreate(
+                        ticket_id=request.ticket_id,
+                        reason_code="COMPLAINT_RISK",
+                        reason_detail=f"消息包含投诉风险词：{risk_word}",
+                        priority="HIGH",
+                    )
+                )
             elif decision.action == "PROCESS":
                 if ticket_status not in {"PROCESSING", "PENDING_REVIEW"}:
                     ticket_status = transition_ticket_status(
@@ -214,13 +224,13 @@ class HandoffService:
             ticket_status=ticket_status,
         )
 
-    def _create_or_reuse_complaint_handoff(self, request: HandoffRequest) -> int:
-        # 做什么：查找同一工单未完成待办，缺失时创建一条投诉风险 HIGH 待办。
-        # 为什么：重复投诉消息不应在客服队列产生多个 PENDING 或 ASSIGNED 任务。
-        # 结果：同一工单的未完成投诉处理始终复用一个待办编号，首次命中才写入新记录。
+    def create_or_reuse_handoff(self, handoff: HandoffCreate) -> int:
+        # 做什么：在调用方已开启的事务中创建或复用同一工单的未完成人工待办。
+        # 为什么：投诉、退款审核等人工场景都需要去重，不能各自实现不同的 PENDING/ASSIGNED 查询规则。
+        # 结果：同一工单存在未完成待办时返回原编号；不存在时按请求的原因和优先级创建 PENDING 待办。
         existing_handoff = self._session.execute(
             select(handoffs.c.id)
-            .where(handoffs.c.ticket_id == request.ticket_id)
+            .where(handoffs.c.ticket_id == handoff.ticket_id)
             .where(handoffs.c.status.in_(("PENDING", "ASSIGNED")))
             .order_by(handoffs.c.id)
             .with_for_update()
@@ -228,15 +238,6 @@ class HandoffService:
         if existing_handoff is not None:
             return existing_handoff
 
-        risk_word = next(
-            word for word in _COMPLAINT_RISK_WORDS if word.casefold() in request.message.casefold()
-        )
-        handoff = HandoffCreate(
-            ticket_id=request.ticket_id,
-            reason_code="COMPLAINT_RISK",
-            reason_detail=f"消息包含投诉风险词：{risk_word}",
-            priority="HIGH",
-        )
         now = datetime.now(timezone.utc)
         result = self._session.execute(
             insert(handoffs).values(
@@ -247,6 +248,19 @@ class HandoffService:
             )
         )
         return result.inserted_primary_key[0]
+
+    def resolve_handoffs(self, ticket_id: int, reason_code: str) -> None:
+        # 做什么：将指定工单和原因的未完成待办标记为 RESOLVED。
+        # 为什么：退款审核已结束后，客服队列不能继续显示已完成的退款审核任务。
+        # 结果：PENDING/ASSIGNED 待办被关闭并更新完成时间；其他原因或已结束待办不受影响。
+        now = datetime.now(timezone.utc)
+        self._session.execute(
+            update(handoffs)
+            .where(handoffs.c.ticket_id == ticket_id)
+            .where(handoffs.c.reason_code == reason_code)
+            .where(handoffs.c.status.in_(("PENDING", "ASSIGNED")))
+            .values(status="RESOLVED", updated_at=now)
+        )
 
 
 @router.post("", response_model=HandoffResponse, status_code=status.HTTP_201_CREATED)
