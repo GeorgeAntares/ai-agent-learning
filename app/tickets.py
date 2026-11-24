@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,10 @@ class CreateTicketRequest(BaseModel):
     """
 
     message: str
+    # 做什么：接收创建工单时可选提供的十二位订单号。
+    # 为什么：用户可从订单页直接发起售后，服务端需要持久化关联而不能依赖浏览器临时状态。
+    # 结果：不传时保持旧接口兼容；传入格式错误订单号时在写库前返回 422。
+    order_no: str | None = Field(default=None, pattern=r"^[0-9]{12}$")
 
     @field_validator("message")
     @classmethod
@@ -114,7 +118,11 @@ def create_ticket(
     created_at = datetime.now(timezone.utc)
     with session.begin():
         ticket_result = session.execute(
-            insert(tickets).values(status="OPEN", created_at=created_at)
+            insert(tickets).values(
+                status="OPEN",
+                order_no=request.order_no,
+                created_at=created_at,
+            )
         )
         ticket_id = ticket_result.inserted_primary_key[0]
         session.execute(

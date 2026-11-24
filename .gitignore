@@ -13,6 +13,8 @@ __pycache__/
 # 为什么：这些文件只反映本机一次测试执行结果，其他开发者可以重新生成。
 # 结果：Git 状态只展示需要协作的源码、迁移、测试与配置模板改动。
 .codex-test-tmp-*/
+.test-tmp/
+pytest-cache-files-*/
 .coverage
 coverage.xml
 htmlcov/

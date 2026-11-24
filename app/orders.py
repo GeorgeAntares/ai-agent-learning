@@ -3,12 +3,12 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_database_session
 from app.errors import AppError
-from app.models import orders
+from app.models import orders, refund_requests, tickets
 
 router = APIRouter(prefix="/api/v1/orders", tags=["orders"])
 
@@ -23,6 +23,21 @@ class OrderResponse(BaseModel):
     logistics_status: str
     receiver_phone: str
     receiver_address: str
+
+
+class OrderTicketSummary(BaseModel):
+    """定义订单页面展示的关联工单摘要。"""
+
+    id: int
+    status: str
+    created_at: str
+
+
+class OrderTicketsResponse(BaseModel):
+    """定义按订单号读取售后工单的固定结果。"""
+
+    order_no: str
+    tickets: list[OrderTicketSummary]
 
 
 def mask_phone(phone: str) -> str:
@@ -59,6 +74,17 @@ def get_order(order_no: str, session: Session = Depends(get_database_session)) -
     return OrderService(session).get_order(order_no)
 
 
+@router.get("/{order_no}/tickets", response_model=OrderTicketsResponse)
+def list_order_tickets(
+    order_no: str,
+    session: Session = Depends(get_database_session),
+) -> OrderTicketsResponse:
+    # 做什么：委托订单工单查询服务读取与指定订单关联的售后记录。
+    # 为什么：路由不能自行拼接 tickets 与 refund_requests 查询，避免订单关联规则在接口间分叉。
+    # 结果：新工单和历史退款工单都能以统一摘要在订单页面展示。
+    return OrderTicketService(session).list_order_tickets(order_no)
+
+
 class OrderService:
     """封装订单查询与收货信息脱敏的唯一服务入口。
 
@@ -92,3 +118,56 @@ class OrderService:
             receiver_phone=mask_phone(order["receiver_phone"]),
             receiver_address=mask_address(order["receiver_address"]),
         )
+
+
+class OrderTicketService:
+    """封装订单维度的工单关联查询入口。"""
+
+    def __init__(self, session: Session) -> None:
+        # 做什么：保存请求注入的数据库会话。
+        # 为什么：订单校验和关联工单读取需使用同一个受控会话生命周期。
+        # 结果：服务可被用户路由复用而不自行管理数据库连接。
+        self._session = session
+
+    def list_order_tickets(self, order_no: str) -> OrderTicketsResponse:
+        # 做什么：校验订单存在后，读取直接关联或由退款申请关联的全部工单。
+        # 为什么：N12 之前创建的退款工单可能未保存 tickets.order_no，查询需兼容已有演示数据。
+        # 结果：不存在订单沿用 order_not_found；无工单时稳定返回空 tickets 列表。
+        OrderService(self._session).get_order(order_no)
+        rows = self._session.execute(
+            select(tickets)
+            .outerjoin(refund_requests, refund_requests.c.ticket_id == tickets.c.id)
+            .where(
+                or_(
+                    tickets.c.order_no == order_no,
+                    refund_requests.c.order_no == order_no,
+                )
+            )
+            .order_by(tickets.c.created_at.desc(), tickets.c.id.desc())
+            .distinct()
+        ).mappings().all()
+        return OrderTicketsResponse(
+            order_no=order_no,
+            tickets=[
+                OrderTicketSummary(
+                    id=row["id"],
+                    status=row["status"],
+                    created_at=_format_utc_datetime(row["created_at"]),
+                )
+                for row in rows
+            ],
+        )
+
+
+def _format_utc_datetime(value: object) -> str:
+    # 做什么：复用订单关联工单摘要所需的标准 UTC 时间格式。
+    # 为什么：工单创建时间在 SQLite 与 MySQL 中的时区表示可能不同，用户端应收到统一字符串。
+    # 结果：订单页面的工单时间始终带 Z 后缀，便于前端直接展示和排序。
+    from datetime import datetime, timezone
+
+    timestamp = value
+    if not isinstance(timestamp, datetime):
+        raise TypeError("ticket created_at must be a datetime")
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

@@ -50,6 +50,10 @@ Copy-Item .env.example .env
 
 脚本会启动 Docker Desktop（如尚未运行），然后复用本地镜像启动 API、MySQL 和 Redis。命令会附加显示容器日志；按 `Ctrl+C` 会停止前台 Compose 服务。
 
+**前端地址**
+
+http://127.0.0.1:5173/
+
 ### 重新构建镜像
 
 修改 `Dockerfile`、`pyproject.toml`、`app` 或 `alembic` 后执行：

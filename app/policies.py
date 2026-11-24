@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, field_validator
 
 router = APIRouter(prefix="/internal/policies", tags=["internal-policies"])
+public_router = APIRouter(prefix="/api/v1/policies", tags=["policies"])
 
 _POLICY_FILE = Path(__file__).parent / "data" / "policies.json"
 
@@ -118,3 +119,17 @@ def search_internal_policies(
     policy_query = PolicyQuery(query=query)
     results = PolicyService().search_policy(policy_query)
     return PolicySearchResponse(query=policy_query.query, results=results)
+
+
+@public_router.get("/search", response_model=PolicySearchResponse)
+def search_policies(
+    query: Annotated[str, Query(min_length=1)],
+) -> PolicySearchResponse:
+    # 做什么：为普通用户政策页提供正式的政策检索接口。
+    # 为什么：用户端不应读取本地知识文件或调用内部路径，检索依据必须集中在 PolicyService。
+    # 结果：正式接口返回可引用政策结果；没有命中时稳定返回空列表。
+    policy_query = PolicyQuery(query=query)
+    return PolicySearchResponse(
+        query=policy_query.query,
+        results=PolicyService().search_policy(policy_query),
+    )

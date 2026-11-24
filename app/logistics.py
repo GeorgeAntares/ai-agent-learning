@@ -11,6 +11,7 @@ from app.errors import AppError
 from app.models import logistics_events
 
 router = APIRouter(prefix="/internal/logistics", tags=["internal-logistics"])
+public_router = APIRouter(prefix="/api/v1/orders", tags=["logistics"])
 
 
 class LogisticsQuery(BaseModel):
@@ -110,3 +111,14 @@ def get_internal_logistics(
     # 结果：有效订单号返回服务结果；无物流数据沿用统一 logistics_not_found 错误响应。
     query = LogisticsQuery(order_no=order_no)
     return LogisticsService(session).get_logistics(query)
+
+
+@public_router.get("/{order_no}/logistics", response_model=LogisticsResult)
+def get_order_logistics(
+    order_no: Annotated[str, Path(pattern=r"^[0-9]{12}$")],
+    session: Session = Depends(get_database_session),
+) -> LogisticsResult:
+    # 做什么：为普通用户订单页提供正式的物流查询入口。
+    # 为什么：用户端不能依赖 /internal 路径，但仍必须通过 LogisticsService 查询轨迹。
+    # 结果：正式接口与内部验收接口返回相同的已排序物流结果和受控错误。
+    return LogisticsService(session).get_logistics(LogisticsQuery(order_no=order_no))

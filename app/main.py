@@ -10,8 +10,10 @@ from app.config import get_settings
 from app.agent import router as agent_router
 from app.errors import AppError, app_error_handler, error_response
 from app.logging_config import configure_logging
+from app.logistics import public_router as public_logistics_router
 from app.logistics import router as logistics_router
 from app.orders import router as orders_router
+from app.policies import public_router as public_policies_router
 from app.policies import router as policies_router
 from app.refunds import router as refunds_router
 from app.triage import router as handoffs_router
@@ -64,11 +66,13 @@ app.include_router(tickets_router)
 # 为什么：Swagger 和手动验收需要调用 LogisticsService，但路由不得直接访问物流事件表。
 # 结果：GET /internal/logistics/{order_no} 使用项目统一的请求 ID 和错误响应机制。
 app.include_router(logistics_router)
+app.include_router(public_logistics_router)
 
 # 做什么：注册仅供本地开发验证的政策检索路由到全局 FastAPI 应用。
 # 为什么：Swagger 和后续 Agent 必须通过 PolicyService 获取政策依据，不能直接读取知识文件。
 # 结果：GET /internal/policies/search 返回类型固定的政策编号、标题和原文片段。
 app.include_router(policies_router)
+app.include_router(public_policies_router)
 
 # 做什么：注册规则分诊和安全转人工路由到全局 FastAPI 应用。
 # 为什么：售后消息必须通过 TriageService 和 HandoffService 处理，不能由路由直接判断风险或写数据库。

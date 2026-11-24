@@ -50,6 +50,21 @@ class RefundRequestResponse(BaseModel):
     created_at: str
 
 
+class RefundRequestDetailResponse(BaseModel):
+    """定义普通用户读取退款进度时可公开查看的完整字段。"""
+
+    id: int
+    ticket_id: int
+    order_no: str
+    reason: str
+    status: str
+    reviewer_note: str | None
+    reviewed_at: str | None
+    refunded_at: str | None
+    created_at: str
+    updated_at: str
+
+
 class ReviewRefundRequest(BaseModel):
     """定义人工审核退款申请时允许提交的决定与备注。"""
 
@@ -137,6 +152,14 @@ class RefundService:
                 )
             )
             refund_request_id = result.inserted_primary_key[0]
+            # 做什么：将退款申请订单号回写到工单的可选关联字段。
+            # 为什么：早期工单创建时不一定已知订单号，退款申请已确认该订单后应让订单页可直接找到工单。
+            # 结果：退款工单可通过 tickets.order_no 查询，历史数据仍由退款表关联查询兼容。
+            self._session.execute(
+                update(tickets)
+                .where(tickets.c.id == ticket_id)
+                .values(order_no=request.order_no)
+            )
             transition_ticket_status(
                 self._session,
                 ticket_id,
@@ -298,6 +321,45 @@ class RefundService:
             assistant_message=assistant_message,
         )
 
+    def get_refund_request(self, refund_request_id: int) -> RefundRequestDetailResponse:
+        # 做什么：按退款申请编号读取普通用户可查看的退款进度详情。
+        # 为什么：用户端需要查询申请当前状态和审核时间，但不应触及审核 Token 或内部待办数据。
+        # 结果：存在申请返回固定详情；不存在时返回 refund_request_not_found。
+        refund_request = self._session.execute(
+            select(refund_requests).where(refund_requests.c.id == refund_request_id)
+        ).mappings().one_or_none()
+        if refund_request is None:
+            raise AppError("refund_request_not_found", "Refund request not found", 404)
+        return self._to_detail_response(refund_request)
+
+    def list_ticket_refund_requests(self, ticket_id: int) -> list[RefundRequestDetailResponse]:
+        # 做什么：确认工单存在后按创建顺序读取该工单的全部退款申请。
+        # 为什么：空退款列表与不存在工单语义不同，用户端需要可靠区分二者。
+        # 结果：有效工单返回可为空的列表；未知工单返回 ticket_not_found。
+        ticket = self._session.execute(
+            select(tickets.c.id).where(tickets.c.id == ticket_id)
+        ).scalar_one_or_none()
+        if ticket is None:
+            raise AppError("ticket_not_found", "Ticket not found", 404)
+        rows = self._session.execute(
+            select(refund_requests)
+            .where(refund_requests.c.ticket_id == ticket_id)
+            .order_by(refund_requests.c.created_at.desc(), refund_requests.c.id.desc())
+        ).mappings().all()
+        return [self._to_detail_response(row) for row in rows]
+
+    def list_order_refund_requests(self, order_no: str) -> list[RefundRequestDetailResponse]:
+        # 做什么：确认订单存在后按创建顺序读取该订单的全部退款申请。
+        # 为什么：订单详情页面应能展示退款历史，未知订单仍需沿用既有 order_not_found 语义。
+        # 结果：有效订单返回可为空的退款列表，不会访问人工审核或待办数据。
+        OrderService(self._session).get_order(order_no)
+        rows = self._session.execute(
+            select(refund_requests)
+            .where(refund_requests.c.order_no == order_no)
+            .order_by(refund_requests.c.created_at.desc(), refund_requests.c.id.desc())
+        ).mappings().all()
+        return [self._to_detail_response(row) for row in rows]
+
     def _to_response(self, refund_request: dict[str, object]) -> RefundRequestResponse:
         # 做什么：将已有退款申请数据库行转换为创建接口的公开摘要。
         # 为什么：重复提交必须返回已存在申请，且不能重写申请时间、状态或审核字段。
@@ -309,6 +371,26 @@ class RefundService:
             reason=str(refund_request["reason"]),
             status=str(refund_request["status"]),
             created_at=format_utc_datetime(refund_request["created_at"]) or "",
+        )
+
+    def _to_detail_response(
+        self,
+        refund_request: dict[str, object],
+    ) -> RefundRequestDetailResponse:
+        # 做什么：将退款数据库行转换为普通用户读取接口的完整公开详情。
+        # 为什么：三个读取接口必须返回一致字段，不能各自在路由中手工挑选或格式化时间。
+        # 结果：退款列表和详情始终不包含审核 Token，并使用统一 UTC 时间格式。
+        return RefundRequestDetailResponse(
+            id=int(refund_request["id"]),
+            ticket_id=int(refund_request["ticket_id"]),
+            order_no=str(refund_request["order_no"]),
+            reason=str(refund_request["reason"]),
+            status=str(refund_request["status"]),
+            reviewer_note=refund_request["reviewer_note"],
+            reviewed_at=format_utc_datetime(refund_request["reviewed_at"]),
+            refunded_at=format_utc_datetime(refund_request["refunded_at"]),
+            created_at=format_utc_datetime(refund_request["created_at"]) or "",
+            updated_at=format_utc_datetime(refund_request["updated_at"]) or "",
         )
 
 
@@ -330,6 +412,48 @@ def create_refund_request(
     if not created:
         response.status_code = status.HTTP_200_OK
     return result
+
+
+@router.get(
+    "/api/v1/tickets/{ticket_id}/refund-requests",
+    response_model=list[RefundRequestDetailResponse],
+)
+def list_ticket_refund_requests(
+    ticket_id: int,
+    session: Session = Depends(get_database_session),
+) -> list[RefundRequestDetailResponse]:
+    # 做什么：读取指定工单的全部退款申请进度。
+    # 为什么：用户端需查看自己的售后退款记录，路由不应直接访问 refund_requests 表。
+    # 结果：存在工单返回列表，未知工单沿用统一 ticket_not_found 错误。
+    return RefundService(session).list_ticket_refund_requests(ticket_id)
+
+
+@router.get(
+    "/api/v1/refund-requests/{refund_request_id}",
+    response_model=RefundRequestDetailResponse,
+)
+def get_refund_request(
+    refund_request_id: int,
+    session: Session = Depends(get_database_session),
+) -> RefundRequestDetailResponse:
+    # 做什么：读取单条退款申请的公开进度详情。
+    # 为什么：用户可通过退款编号刷新状态，不需要也不允许访问人工审核接口。
+    # 结果：存在申请返回详情；不存在时返回统一 refund_request_not_found 错误。
+    return RefundService(session).get_refund_request(refund_request_id)
+
+
+@router.get(
+    "/api/v1/orders/{order_no}/refund-requests",
+    response_model=list[RefundRequestDetailResponse],
+)
+def list_order_refund_requests(
+    order_no: str,
+    session: Session = Depends(get_database_session),
+) -> list[RefundRequestDetailResponse]:
+    # 做什么：读取指定订单的全部退款申请进度。
+    # 为什么：订单页要展示退款历史，读取规则必须继续由 RefundService 统一控制。
+    # 结果：有效订单返回列表；未知订单沿用 order_not_found 错误。
+    return RefundService(session).list_order_refund_requests(order_no)
 
 
 @router.post("/api/v1/refund-requests/{refund_request_id}/review", response_model=RefundReviewResponse)

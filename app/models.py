@@ -37,6 +37,10 @@ tickets = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("status", String(32), nullable=False),
+    # 做什么：保存工单可选关联的演示订单号。
+    # 为什么：订单详情需定位关联售后，而旧工单尚未记录订单号因此字段必须可空。
+    # 结果：新建工单可直接按订单查询，历史退款工单仍可通过退款申请关联兼容读取。
+    Column("order_no", String(12), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 ticket_messages = Table(
